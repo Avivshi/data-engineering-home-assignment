@@ -1,48 +1,77 @@
-AWSTemplateFormatVersion: "2010-09-09"
-Description: CloudFormation template to create a Lambda function that prints "Hello, World!".
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  S3Bucket:
+    Type: String
+    Default: "data-engineer-assignment-aviv-shimoni"
 
 Resources:
-    LambdaExecutionRole:
-        Type: "AWS::IAM::Role"
-        Properties:
-            AssumeRolePolicyDocument:
-                Version: "2012-10-17"
-                Statement:
-                    - Effect: "Allow"
-                      Principal:
-                          Service:
-                              - "lambda.amazonaws.com"
-                      Action: "sts:AssumeRole"
-            Policies:
-                - PolicyName: "LambdaExecutionPolicy"
-                  PolicyDocument:
-                      Version: "2012-10-17"
-                      Statement:
-                          - Effect: "Allow"
-                            Action:
-                                - "logs:CreateLogGroup"
-                                - "logs:CreateLogStream"
-                                - "logs:PutLogEvents"
-                            Resource: "arn:aws:logs:*:*:*"
 
-    HelloWorldLambda:
-        Type: "AWS::Lambda::Function"
-        Properties:
-            FunctionName: "HelloWorldFunction"
-            Handler: "index.handler"
-            Role: !GetAtt LambdaExecutionRole.Arn
-            Runtime: "python3.9"
-            Code:
-                ZipFile: |
-                    def handler(event, context):
-                        print("Hello, World!")
-            Timeout: 30
-            MemorySize: 128
+  # Glue Database
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: stocks_analysis_db
 
-Outputs:
-    LambdaFunctionName:
-        Description: "Name of the Lambda function created"
-        Value: !Ref HelloWorldLambda
-    LambdaExecutionRoleArn:
-        Description: "ARN of the Lambda execution role"
-        Value: !GetAtt LambdaExecutionRole.Arn
+  # Glue Job Role
+  GlueJobRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: GlueJobS3AccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:aws:s3:::${S3Bucket}
+                  - !Sub arn:aws:s3:::${S3Bucket}/*
+              - Effect: Allow
+                Action:
+                  - glue:*
+                Resource: "*"
+
+  # Glue Job
+  GlueJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: StockAnalysisJob
+      Role: !GetAtt GlueJobRole.Arn
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub s3://${S3Bucket}/stock_analysis_solution.py
+        PythonVersion: 3
+      DefaultArguments:
+        --TempDir: !Sub s3://${S3Bucket}/temp/
+        --job-language: python
+      GlueVersion: "3.0"
+      MaxCapacity: 2
+
+  # Glue Crawler
+  GlueCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: StockAnalysisCrawler
+      Role: !GetAtt GlueJobRole.Arn
+      DatabaseName: !Ref GlueDatabase
+      Targets:
+        S3Targets:
+          - Path: !Sub s3://${S3Bucket}/results/average_daily_return/
+          - Path: !Sub s3://${S3Bucket}/results/highest_worth/
+          - Path: !Sub s3://${S3Bucket}/results/most_volatile/
+          - Path: !Sub s3://${S3Bucket}/results/top_30_day_returns/
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: DELETE_FROM_DATABASE
